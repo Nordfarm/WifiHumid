@@ -14,22 +14,41 @@ MqttClient mqttClient(wifiClient);
 
 const char broker[] = MQTT_BROKER;
 int        port     = 1883;
-const char topic[]  = "arduino/simple";
+//const char topic[]  = "plants_kitchen/simple";
 
 //Air temperature/humidity
 #include "DHT.h"
 #define DHTTYPE DHT11
 #define DHTPIN 2
-DHT dht(DHTPIN, DHTTYPE);
+DHT airTempHumid(DHTPIN, DHTTYPE);
+
+const char* const airTempHumid_topicTemp  = "plants_kitchen/airTemp";
+const char* const airTempHumid_topicHumid = "plants_kitchen/airHumid";
+
 
 //Soil humidity
 const int soilhumid_num    = 2;
 const int soilhumid_pins[] = {A0, A1};
-// Calibration
+const char* const soilhumid_topic[] = {"plants_kitchen/soilhumid0",
+                                       "plants_kitchen/soilhumid1"};
+float soilhumid_data[2];
+
+// Calibration of soil humidity
 const float soil100 = 2.48; //[V] Water
 const float soil0   = 3.65; //[V] Air
 
-float soilhumid_data[2];
+
+//General config
+const unsigned long update_interval         = 1000; //[ms] How often to loop (general)
+const unsigned long update_interval_DHT     = 5000; //[ms] How often to loop
+
+//Global vars
+unsigned long prevUpdateTime     = 0;
+unsigned long prevUpdateTime_DHT = 0;
+#define serialBuff_len 100
+char serialBuff[serialBuff_len];
+
+// *** THE CODE ***
 
 void setup() {
 
@@ -101,47 +120,81 @@ void setup() {
 
   
   
-  dht.begin();
+  airTempHumid.begin();
 
   Serial.println("WifiHumid ready!");
 }
 
 void loop() {
-  // Wait a few seconds between measurements.
-  delay(2000);
+  // ** Flood control **
+  //Only update at intervals, not "as fast as we can possibly go"
+  //This is the minimum interval; if e.g. web server takes more time, it will be slowed down.
+  unsigned long thisUpdateTime = millis();
+  if (not (thisUpdateTime - prevUpdateTime >= update_interval)) {
+    //Not ready yet.
+    //Note that this should be safe when millis rolls over,
+    // however the interval when it happens will almost certainly be shorter
+    return;
+  }
+  prevUpdateTime = thisUpdateTime;
 
+  // Housekeeping
   mqttClient.poll();
+
+
+  // Read soil humidity data
+  for (int i=0; i<soilhumid_num; i++) {
+    soilhumid_data[i] = (float(analogRead(soilhumid_pins[i]))/1023.0)*5.0; // read sensor
+    soilhumid_data[i] = 100*(soil0-soilhumid_data[i])/(soil0-soil100); //Calibrate to percent
+    
+    //Serial.print("Soilhumid[");
+    //Serial.print(soilhumid_data[i]);
+    snprintf(serialBuff,serialBuff_len, "plants_kitchen/soilhumid%d [%%] = ", i);
+    Serial.print(serialBuff);
+    Serial.println(soilhumid_data[i]);
+
+    mqttClient.beginMessage(soilhumid_topic[i]);
+    mqttClient.print(soilhumid_data[i]);
+    mqttClient.endMessage();
+    
+  }
+
+
+  // ** Flood control **
+  //Only update at intervals, not "as fast as we can possibly go"
+  //This is the minimum interval; if e.g. web server takes more time, it will be slowed down.
+  if (not (thisUpdateTime - prevUpdateTime_DHT >= update_interval_DHT)) {
+    //Not ready yet.
+    //Note that this should be safe when millis rolls over,
+    // however the interval when it happens will almost certainly be shorter
+    return;
+  }
+  prevUpdateTime_DHT = thisUpdateTime;
 
   // Reading temperature or humidity takes about 250 milliseconds!
   // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
-  float h = dht.readHumidity();
+  float humid = airTempHumid.readHumidity();
   // Read temperature as Celsius (the default)
-  float t = dht.readTemperature();
-    if (isnan(h) || isnan(t)) {
+  float temp = airTempHumid.readTemperature();
+  if (isnan(humid) || isnan(temp)) {
     Serial.println(F("Failed to read from DHT sensor!"));
     return;
   }
 
-  Serial.print(h);
-  //Serial.print(F(" Temperature[C]: "));
-  Serial.print(", ");
-  Serial.print(t);
-  //Serial.println(F("")); 
-
-
-  for (int i=0; i<soilhumid_num; i++) {
-    soilhumid_data[i] = (float(analogRead(soilhumid_pins[i]))/1023.0)*5.0; // read sensor
-    soilhumid_data[i] = 100*(soil0-soilhumid_data[i])/(soil0-soil100); //Calibrate to percent
-    Serial.print(", ");
-    Serial.print(soilhumid_data[i]);
-  }
-  Serial.println();
-
-  mqttClient.beginMessage(topic);
-  mqttClient.print("Humid = ");
-  mqttClient.print(soilhumid_data[0]);
+  snprintf(serialBuff,serialBuff_len, "%s [degC] = ", airTempHumid_topicTemp);
+  Serial.print(serialBuff);
+  Serial.println(temp);
+  mqttClient.beginMessage(airTempHumid_topicTemp);
+  mqttClient.print(temp);
   mqttClient.endMessage();
-  
+    
+  snprintf(serialBuff,serialBuff_len, "%s [%%] = ", airTempHumid_topicHumid);
+  Serial.print(serialBuff);
+  Serial.println(humid);
+  mqttClient.beginMessage(airTempHumid_topicHumid);
+  mqttClient.print(humid);
+  mqttClient.endMessage();
+
 }
 
 
