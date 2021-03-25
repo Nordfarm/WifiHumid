@@ -41,6 +41,11 @@ const float soil0   = 3.65; //[V] Air
 const int           soil_nsamples     = 10;
 const unsigned long soil_sampleDelay = 10; //[ms]
 
+// Soilhumid LEDs and their limits
+const size_t soilhumid_nLEDS  = 6;
+const int    soilhumid_LEDS[] = { 8,  9, 10, 11, 12, 13};
+const float  soilhumid_LIMS[] = {50, 60, 70, 80, 90,100};
+
 //General config
 const unsigned long update_interval         = 1000; //[ms] How often to loop (general)
 const unsigned long update_interval_DHT     = 5000; //[ms] How often to loop the DHT
@@ -100,12 +105,18 @@ void setup() {
 
   Serial.println("You're connected to the MQTT broker!");
   Serial.println();
-
-
   
-  
+  //Initialize air temperature & humidity sensor
   airTempHumid.begin();
 
+  //Initialize LEDS
+  for (size_t i=0; i < soilhumid_nLEDS; i++) {
+    pinMode     (soilhumid_LEDS[i],OUTPUT);
+    digitalWrite(soilhumid_LEDS[i],HIGH);
+    delay(50);
+    digitalWrite(soilhumid_LEDS[i],LOW);
+  }
+  
   Serial.println("WifiHumid ready!");
 }
 
@@ -125,29 +136,7 @@ void loop() {
   // Housekeeping
   mqttClient.poll();
 
-
-  // Read soil humidity data
-  for (int i=0; i<soilhumid_num; i++) {
-    float soilhumid_data_tmp1 = 0;
-    for (int j=0; j < soil_nsamples; j++) {
-      float soilhumid_data_tmp2 = (float(analogRead(soilhumid_pins[i]))/1023.0)*5.0; // read sensor
-      soilhumid_data_tmp2       = 100*(soil0-soilhumid_data_tmp2)/(soil0-soil100); //Calibrate to percent
-      soilhumid_data_tmp1      += soilhumid_data_tmp2;
-
-      delay(soil_sampleDelay);
-    }
-    soilhumid_data[i] = soilhumid_data_tmp1/soil_nsamples;
-
-    //Serial.print("Soilhumid[");
-    //Serial.print(soilhumid_data[i]);
-    snprintf(serialBuff,serialBuff_len, "plants_kitchen/soilhumid%d [%%] = ", i);
-    Serial.print(serialBuff);
-    Serial.println(soilhumid_data[i]);
-
-    mqttClient.beginMessage(soilhumid_topic[i]);
-    mqttClient.print(soilhumid_data[i]);
-    mqttClient.endMessage();
-  }
+  soilhumid_read();
 
   // ** Flood control **
   //Only update at intervals, not "as fast as we can possibly go"
@@ -186,6 +175,48 @@ void loop() {
 
 }
 
+// **** SOILHUMID CODE ***** //
+
+void soilhumid_read() {
+  // Read soil humidity data
+  for (int i=0; i<soilhumid_num; i++) {
+    float soilhumid_data_tmp1 = 0;
+    for (int j=0; j < soil_nsamples; j++) {
+      float soilhumid_data_tmp2 = (float(analogRead(soilhumid_pins[i]))/1023.0)*5.0; // read sensor
+      soilhumid_data_tmp2       = 100*(soil0-soilhumid_data_tmp2)/(soil0-soil100); //Calibrate to percent
+      soilhumid_data_tmp1      += soilhumid_data_tmp2;
+
+      delay(soil_sampleDelay);
+    }
+    soilhumid_data[i] = soilhumid_data_tmp1/soil_nsamples;
+
+    //Serial.print("Soilhumid[");
+    //Serial.print(soilhumid_data[i]);
+    snprintf(serialBuff,serialBuff_len, "plants_kitchen/soilhumid%d [%%] = ", i);
+    Serial.print(serialBuff);
+    Serial.println(soilhumid_data[i]);
+
+    mqttClient.beginMessage(soilhumid_topic[i]);
+    mqttClient.print(soilhumid_data[i]);
+    mqttClient.endMessage();
+  }
+
+  static int showLED = 0;
+  soilhumid_leds(showLED);
+  showLED = (showLED+1)%2;
+  
+}
+
+void soilhumid_leds(size_t sensorID) {
+  for (size_t i=0; i < soilhumid_nLEDS; i++) {
+    if (soilhumid_data[sensorID] > soilhumid_LIMS[i]) {
+      digitalWrite(soilhumid_LEDS[i],HIGH);
+    }
+    else {
+      digitalWrite(soilhumid_LEDS[i],LOW);
+    }
+  }
+}
 
 // **** WIFI CODE ***** //
 
