@@ -26,7 +26,7 @@ const char* const airTempHumid_topicTemp  = "plants_kitchen/airTemp";
 const char* const airTempHumid_topicHumid = "plants_kitchen/airHumid";
 
 
-//Soil humidity
+//Soil humidity (capacitive sensor)
 const int soilhumid_num    = 2;
 const int soilhumid_pins[] = {A0, A1};
 const char* const soilhumid_topic[] = {"plants_kitchen/soilhumid0",
@@ -37,10 +37,13 @@ float soilhumid_data[2];
 const float soil100 = 2.48; //[V] Water
 const float soil0   = 3.65; //[V] Air
 
+// Acquisition parameters for soil humidity
+const int           soil_nsamples     = 10;
+const unsigned long soil_sampleDelay = 10; //[ms]
 
 //General config
 const unsigned long update_interval         = 1000; //[ms] How often to loop (general)
-const unsigned long update_interval_DHT     = 5000; //[ms] How often to loop
+const unsigned long update_interval_DHT     = 5000; //[ms] How often to loop the DHT
 
 //Global vars
 unsigned long prevUpdateTime     = 0;
@@ -75,26 +78,7 @@ void setup() {
   if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
     Serial.println("Please upgrade the firmware");
   }
-  // attempt to connect to WiFi network:
-  while (status != WL_CONNECTED) {
-    Serial.print("Attempting to connect to WPA SSID: ");
-    Serial.println(ssid);
-    // Connect to WPA/WPA2 network:
-    status = WiFi.begin(ssid, pass);
-
-    // wait 10 seconds for connection:
-    //delay(10000);
-    while (WiFi.status() == WL_IDLE_STATUS) {
-      Serial.print(".");
-      delay(100);
-    }
-  }
-  Serial.println();
-  // you're connected now, so print out the data:
-  Serial.print("You're connected to the network");
-  printCurrentNet();
-  printWifiData();
-  Serial.println();
+  connectWifi();
 
 
   // You can provide a unique client ID, if not set the library uses Arduino-millis()
@@ -144,9 +128,16 @@ void loop() {
 
   // Read soil humidity data
   for (int i=0; i<soilhumid_num; i++) {
-    soilhumid_data[i] = (float(analogRead(soilhumid_pins[i]))/1023.0)*5.0; // read sensor
-    soilhumid_data[i] = 100*(soil0-soilhumid_data[i])/(soil0-soil100); //Calibrate to percent
-    
+    float soilhumid_data_tmp1 = 0;
+    for (int j=0; j < soil_nsamples; j++) {
+      float soilhumid_data_tmp2 = (float(analogRead(soilhumid_pins[i]))/1023.0)*5.0; // read sensor
+      soilhumid_data_tmp2       = 100*(soil0-soilhumid_data_tmp2)/(soil0-soil100); //Calibrate to percent
+      soilhumid_data_tmp1      += soilhumid_data_tmp2;
+
+      delay(soil_sampleDelay);
+    }
+    soilhumid_data[i] = soilhumid_data_tmp1/soil_nsamples;
+
     //Serial.print("Soilhumid[");
     //Serial.print(soilhumid_data[i]);
     snprintf(serialBuff,serialBuff_len, "plants_kitchen/soilhumid%d [%%] = ", i);
@@ -156,9 +147,7 @@ void loop() {
     mqttClient.beginMessage(soilhumid_topic[i]);
     mqttClient.print(soilhumid_data[i]);
     mqttClient.endMessage();
-    
   }
-
 
   // ** Flood control **
   //Only update at intervals, not "as fast as we can possibly go"
@@ -197,6 +186,36 @@ void loop() {
 
 }
 
+
+// **** WIFI CODE ***** //
+
+
+void connectWifi() {
+  if (status == WL_CONNECTED) {
+    return;
+  }
+  
+  // attempt to connect to WiFi network:
+  while (status != WL_CONNECTED) {
+    Serial.print("Attempting to connect to WPA SSID: ");
+    Serial.println(ssid);
+    // Connect to WPA/WPA2 network:
+    status = WiFi.begin(ssid, pass);
+
+    // wait 10 seconds for connection:
+    //delay(10000);
+    while (WiFi.status() == WL_IDLE_STATUS) {
+      Serial.print(".");
+      delay(100);
+    }
+  }
+  Serial.println();
+  // you're connected now, so print out the data:
+  Serial.print("You're connected to the network");
+  printCurrentNet();
+  printWifiData();
+  Serial.println();
+}
 
 void printWifiData() {
   // print your board's IP address:
