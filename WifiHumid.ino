@@ -18,7 +18,7 @@ int        port     = 1883;
 
 //Air temperature/humidity
 #include "DHT.h"
-#define DHTTYPE DHT11
+#define DHTTYPE DHT22
 #define DHTPIN 2
 DHT airTempHumid(DHTPIN, DHTTYPE);
 
