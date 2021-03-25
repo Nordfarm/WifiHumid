@@ -3,9 +3,9 @@
 #include <WiFiNINA.h>
 #include "arduino_secrets.h" 
 ///////please enter your sensitive data in the Secret tab/arduino_secrets.h
-char ssid[] = SECRET_SSID;        // your network SSID (name)
-char pass[] = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
-int status = WL_IDLE_STATUS;     // the WiFi radio's status
+char ssid[]    = SECRET_SSID;        // your network SSID (name)
+char pass[]    = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
+int WIFIstatus = WL_IDLE_STATUS;     // the WiFi radio's status
 
 //MQTT
 #include <ArduinoMqttClient.h>
@@ -74,7 +74,8 @@ void setup() {
 
   
   // check for the WiFi module:
-  if (WiFi.status() == WL_NO_MODULE) {
+  WIFIstatus = WiFi.status();
+  if (WIFIstatus == WL_NO_MODULE) {
     Serial.println("Communication with WiFi module failed!");
     // don't continue
     while (true);
@@ -222,20 +223,21 @@ void soilhumid_leds(size_t sensorID) {
 
 
 void connectWifi() {
-  if (status == WL_CONNECTED) {
+  WIFIstatus = WiFi.status();
+  if (WIFIstatus == WL_CONNECTED) {
     return;
   }
   
   // attempt to connect to WiFi network:
-  while (status != WL_CONNECTED) {
+  while (WIFIstatus != WL_CONNECTED) {
     Serial.print("Attempting to connect to WPA SSID: ");
     Serial.println(ssid);
     // Connect to WPA/WPA2 network:
-    status = WiFi.begin(ssid, pass);
+    WIFIstatus = WiFi.begin(ssid, pass);
 
     // wait 10 seconds for connection:
     //delay(10000);
-    while (WiFi.status() == WL_IDLE_STATUS) {
+    while ((WIFIstatus=WiFi.status()) == WL_IDLE_STATUS) {
       Serial.print(".");
       delay(100);
     }
