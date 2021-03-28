@@ -4,17 +4,22 @@
 #include "arduino_secrets.h" 
 ///////please enter your sensitive data in the Secret tab/arduino_secrets.h
 char ssid[]    = SECRET_SSID;        // your network SSID (name)
-char pass[]    = SECRET_PASS;    // your network password (use for WPA, or use as key for WEP)
+char pass[]    = SECRET_PASS;        // your network password (use for WPA, or use as key for WEP)
+
 int WIFIstatus = WL_IDLE_STATUS;     // the WiFi radio's status
+bool remoteOK  = false;              // WiFi and MQTT is connected?
+int remoteLED  = 7;                  // Pin for remoteOK indicator LED
+
 
 //MQTT
 #include <ArduinoMqttClient.h>
 WiFiClient wifiClient;
 MqttClient mqttClient(wifiClient);
 
-const char broker[] = MQTT_BROKER;
-int        port     = 1883;
+const char broker[]   = MQTT_BROKER;
+int        port       = 1883;
 //const char topic[]  = "plants_kitchen/simple";
+const unsigned long MQTTtimeout = 5000; //[ms]
 
 //Air temperature/humidity
 #include "DHT.h"
@@ -47,12 +52,15 @@ const int    soilhumid_LEDS[] = { 8,  9, 10, 11, 12, 13};
 const float  soilhumid_LIMS[] = {50, 60, 70, 80, 90,100};
 
 //General config
-const unsigned long update_interval         = 1000; //[ms] How often to loop (general)
-const unsigned long update_interval_DHT     = 5000; //[ms] How often to loop the DHT
+const unsigned long update_interval         = 1000L;      //[ms] How often to loop (general)
+const unsigned long update_interval_DHT     = 5000L;      //[ms] How often to loop the DHT
+const unsigned long update_interval_WIFI    = 5*60*1000L; //[ms] How often to try reconnecting the WiFi
 
 //Global vars
-unsigned long prevUpdateTime     = 0;
-unsigned long prevUpdateTime_DHT = 0;
+unsigned long prevUpdateTime      = 0L;
+unsigned long prevUpdateTime_DHT  = 0L;
+unsigned long prevUpdateTime_WIFI = 0L;
+
 #define serialBuff_len 100
 char serialBuff[serialBuff_len];
 
@@ -71,7 +79,7 @@ void setup() {
   }
   Serial.println("WifiHumid initializing...");
 
-
+  pinMode(remoteLED, OUTPUT);
   
   // check for the WiFi module:
   WIFIstatus = WiFi.status();
@@ -84,29 +92,8 @@ void setup() {
   if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
     Serial.println("Please upgrade the firmware");
   }
-  connectWifi();
+  connectWifi(true); //Also MQTT
 
-
-  // You can provide a unique client ID, if not set the library uses Arduino-millis()
-  // Each client must have a unique client ID
-  // mqttClient.setId("clientId");
-
-  // You can provide a username and password for authentication
-  // mqttClient.setUsernamePassword("username", "password");
-
-  Serial.print("Attempting to connect to the MQTT broker: ");
-  Serial.println(broker);
-
-  if (!mqttClient.connect(broker, port)) {
-    Serial.print("MQTT connection failed! Error code = ");
-    Serial.println(mqttClient.connectError());
-
-    while (1);
-  }
-
-  Serial.println("You're connected to the MQTT broker!");
-  Serial.println();
-  
   //Initialize air temperature & humidity sensor
   airTempHumid.begin();
 
@@ -118,8 +105,13 @@ void setup() {
     digitalWrite(soilhumid_LEDS[i],LOW);
   }
   
+  
+  
   Serial.println("WifiHumid ready!");
 }
+
+
+
 
 void loop() {
   // ** Flood control **
@@ -135,7 +127,10 @@ void loop() {
   prevUpdateTime = thisUpdateTime;
 
   // Housekeeping
-  mqttClient.poll();
+  connectWifi(false);
+  if (remoteOK) {
+    mqttClient.poll();
+  }
 
   soilhumid_read();
 
@@ -163,17 +158,19 @@ void loop() {
   snprintf(serialBuff,serialBuff_len, "%s [degC] = ", airTempHumid_topicTemp);
   Serial.print(serialBuff);
   Serial.println(temp);
-  mqttClient.beginMessage(airTempHumid_topicTemp);
-  mqttClient.print(temp);
-  mqttClient.endMessage();
-    
+  if (remoteOK) {
+    mqttClient.beginMessage(airTempHumid_topicTemp);
+    mqttClient.print(temp);
+    mqttClient.endMessage();
+  }  
   snprintf(serialBuff,serialBuff_len, "%s [%%] = ", airTempHumid_topicHumid);
   Serial.print(serialBuff);
   Serial.println(humid);
-  mqttClient.beginMessage(airTempHumid_topicHumid);
-  mqttClient.print(humid);
-  mqttClient.endMessage();
-
+  if (remoteOK) {
+    mqttClient.beginMessage(airTempHumid_topicHumid);
+    mqttClient.print(humid);
+    mqttClient.endMessage();
+  }
 }
 
 // **** SOILHUMID CODE ***** //
@@ -197,9 +194,11 @@ void soilhumid_read() {
     Serial.print(serialBuff);
     Serial.println(soilhumid_data[i]);
 
-    mqttClient.beginMessage(soilhumid_topic[i]);
-    mqttClient.print(soilhumid_data[i]);
-    mqttClient.endMessage();
+    if (remoteOK) {
+      mqttClient.beginMessage(soilhumid_topic[i]);
+      mqttClient.print(soilhumid_data[i]);
+      mqttClient.endMessage();
+    }
   }
 
   static int showLED = 0;
@@ -222,32 +221,88 @@ void soilhumid_leds(size_t sensorID) {
 // **** WIFI CODE ***** //
 
 
-void connectWifi() {
-  WIFIstatus = WiFi.status();
-  if (WIFIstatus == WL_CONNECTED) {
-    return;
+void connectWifi(bool doItNow) {
+  // ** Flood control **
+  //Only update at intervals, not "as fast as we can possibly go"
+  //This is the minimum interval; if something takes more time, it will be slowed down.
+  unsigned long thisUpdateTime = millis();
+  if (not doItNow) {
+    if (not ( (thisUpdateTime - prevUpdateTime_WIFI) >= update_interval_WIFI) ) {
+      //Not ready yet.
+      //Note that this should be safe when millis rolls over,
+      // however the interval when it happens will almost certainly be shorter
+      return;
+    }
   }
+  prevUpdateTime_WIFI = thisUpdateTime;
+  // Note: Also updated at bottom of function,
+  // to only start counting time once fuction is done
   
-  // attempt to connect to WiFi network:
-  while (WIFIstatus != WL_CONNECTED) {
+  WIFIstatus = WiFi.status();
+  if (WIFIstatus != WL_CONNECTED) {
+    // attempt to connect to WiFi network:
     Serial.print("Attempting to connect to WPA SSID: ");
     Serial.println(ssid);
     // Connect to WPA/WPA2 network:
     WIFIstatus = WiFi.begin(ssid, pass);
-
-    // wait 10 seconds for connection:
-    //delay(10000);
-    while ((WIFIstatus=WiFi.status()) == WL_IDLE_STATUS) {
+    // wait for connection:
+    int loopCounter = 0;
+    while ((WIFIstatus=WiFi.status()) == WL_IDLE_STATUS && loopCounter < 10) {
       Serial.print(".");
+      loopCounter++;
       delay(100);
     }
+    if (loopCounter == 10) {
+      Serial.println("Wifi connection timed out.");
+    }
+    Serial.println();
+    if (WIFIstatus == WL_CONNECTED) {
+      // you're connected now, so print out the data:
+      Serial.print("You're connected to the network");
+      printCurrentNet();
+      printWifiData();
+      Serial.println();
+    }
+    else {
+      Serial.println("Network connection failed!");
+    }
   }
-  Serial.println();
-  // you're connected now, so print out the data:
-  Serial.print("You're connected to the network");
-  printCurrentNet();
-  printWifiData();
-  Serial.println();
+
+  //MQTT setup
+  if (WIFIstatus == WL_CONNECTED) {
+    // You can provide a unique client ID, if not set the library uses Arduino-millis()
+    // Each client must have a unique client ID
+    // mqttClient.setId("clientId");
+
+    // You can provide a username and password for authentication
+    // mqttClient.setUsernamePassword("username", "password");
+    if (! mqttClient.connected()) {
+      Serial.print("Attempting to connect to the MQTT broker: ");
+      Serial.println(broker);
+
+      mqttClient.setConnectionTimeout(MQTTtimeout);
+      if (!mqttClient.connect(broker, port)) {
+        Serial.print("MQTT connection failed! Error code = ");
+        Serial.println(mqttClient.connectError());
+        Serial.println("Will try again later");
+      }
+      else {
+        Serial.println("You're connected to the MQTT broker!");
+        Serial.println();
+      }
+    }
+  }
+
+  // Set the overal remote status bit
+  if (WIFIstatus == WL_CONNECTED && mqttClient.connected()) {
+    remoteOK = true;
+    digitalWrite(remoteLED,HIGH);
+  }
+  else {
+    remoteOK = false;
+    digitalWrite(remoteLED,LOW);
+  }
+  prevUpdateTime_WIFI = millis();
 }
 
 void printWifiData() {
